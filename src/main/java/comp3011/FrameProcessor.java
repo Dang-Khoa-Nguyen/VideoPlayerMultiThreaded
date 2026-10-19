@@ -28,6 +28,8 @@ import org.bytedeco.javacv.Frame;
  * conditions, frame overwrites or frame tearing etc. Some helper methods are provided
  * for this.
  * </p>
+ * 
+ * To make a new effect available on the command line, add FrameProcessor to {@link FrameProcessorOption}
  */
 public abstract class FrameProcessor {
     protected InfoVideo videoInfo;
