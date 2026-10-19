@@ -32,6 +32,8 @@ public class CommandLineController {
     private Integer displayId;
     private File videoFile;
     private String errorMessage;
+    private final List<FrameProcessor> frameProcessors = new ArrayList<>();
+    public List<FrameProcessor> getFrameProcessors() { return frameProcessors; }
 
     public CommandLineController(String[] args) {
         this.args = args.clone();
@@ -71,22 +73,51 @@ public class CommandLineController {
     public boolean shouldLaunchApplication() {
         return errorMessage == null && videoFile != null;
     }
+    
+    // Whole-word options like --help or --dust-frames. Matching is exact (case-sensitive).
+    // Built-in options are repeated in parseShortFlags, so keep them in sync.
+    private void parseLongOption(String arg) {
+        switch (arg) {
+            case "--help" -> helpRequested = true;
+            case "--audio" -> audioRequested = true;
+            case "--maximise" -> maximiseRequested = true;
+            case "--monitor-1" -> setDisplayId(1);
+            case "--monitor-2" -> setDisplayId(2);
+            default -> {
+                FrameProcessorOption option = FrameProcessorOption.fromLongName(arg.substring(2));
+                if (option != null) frameProcessors.add(option.create());
+                else errorMessage = "Unknown option: " + arg;
+            }
+        }
+    }
+    
+    // Single or stacked flags like -n or -jfddn. Read left to right, so letter order is effect order.
+    // One unknown letter makes the whole command an error.
+    private void parseShortFlags(String arg) {
+        for (char flag : arg.substring(1).toCharArray()) {
+            switch (flag) {
+                case 'h' -> helpRequested = true;
+                case 'a' -> audioRequested = true;
+                case 'x' -> maximiseRequested = true;
+                case '1' -> setDisplayId(1);
+                case '2' -> setDisplayId(2);
+                default -> {
+                    FrameProcessorOption option = FrameProcessorOption.fromShortFlag(flag);
+                    if (option != null) frameProcessors.add(option.create());
+                    else errorMessage = "Unknown option: -" + flag;
+                }
+            }
+        }
+    }
 
     private void parse() {
         List<String> videoFiles = new ArrayList<>();
         for (String arg : args) {
-            if ("-h".equals(arg) || "--help".equals(arg)) {
-                helpRequested = true;
-            } else if ("-a".equals(arg) || "--audio".equals(arg)) {
-                audioRequested = true;
-            } else if ("-x".equals(arg) || "--maximise".equals(arg)) {
-                maximiseRequested = true;
-            } else if ("-1".equals(arg) || "--monitor-1".equals(arg)) {
-                setDisplayId(1);
-            } else if ("-2".equals(arg) || "--monitor-2".equals(arg)) {
-                setDisplayId(2);
-            } else if (arg.startsWith("-")) {
-                errorMessage = "Unknown option: " + arg;
+            if (arg.startsWith("--")) {
+                parseLongOption(arg);
+            } else if (arg.startsWith("-") && arg.length() > 1) {
+            	// handles single flags and stacks like -jfddn
+                parseShortFlags(arg);              
             } else {
                 videoFiles.add(arg);
             }
@@ -101,7 +132,8 @@ public class CommandLineController {
                 videoFile = null;
             }
         } else {
-            if (!helpRequested) {
+        	// --help may stand alone with no video. Combined with anything else it is an error.
+            if (!helpRequested || args.length > 1) {
                 errorMessage = "No video file specified.";
             }
         }
