@@ -41,7 +41,10 @@ public class VideoPlayerModel {
     private static final long NO_SEEK_REQUEST = -1; // Sentinel value used when no seek position is active.
     private static final long FIVE_SECONDS_US = 5_000_000L;
     private static final long AUDIO_LEAD_NS = 30_000_000L;
-
+    
+    private long decodeNs, convertNs, timedFrames;
+    private long[] effectNs;
+    
     private final List<FrameProcessor> frameProcessors;
     private final Queue<PendingAudio> pendingAudio = new ArrayDeque<>();
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
@@ -303,7 +306,9 @@ public class VideoPlayerModel {
 
     private PreparedFrame readNextVideoFrame() throws Exception {
         while (playbackOpen) {
-            Frame frame = grabFrame();
+			 long decodeStart = System.nanoTime();
+			 Frame frame = grabFrame();
+			 decodeNs += System.nanoTime() - decodeStart;
             if (frame == null) {
                 finishPlayback();
                 return null;
@@ -346,7 +351,12 @@ public class VideoPlayerModel {
             InfoFrame info = new InfoFrame(frameNumber, timestampUs);
             processFrame(frame, info);
 
+            long convertStart = System.nanoTime();
             Image image = converter.convert(frame);
+            convertNs += System.nanoTime() - convertStart;
+            if (++timedFrames % 120 == 0) {
+                reportTimings();
+            }
             long relativeTimestampUs = Math.max(0, timestampUs - firstTimestampUs);
             long logicalTimestampUs = logicalPlaybackBaseUs + relativeTimestampUs;
             long targetTimeNs = playbackStartNs + relativeTimestampUs * 1_000L;
@@ -363,6 +373,15 @@ public class VideoPlayerModel {
         return null;
     }
 
+    private void reportTimings() {
+        System.out.printf("Average microseconds per frame: decode %d, convert %d%n",
+                decodeNs / timedFrames / 1000, convertNs / timedFrames / 1000);
+        for (int i = 0; i < frameProcessors.size(); i++) {
+            System.out.printf("  %-18s %d%n",
+                    frameProcessors.get(i).getClass().getSimpleName(), effectNs[i] / timedFrames / 1000);
+        }
+    }
+    
     // This is called on a heart beat by the GUI thread. We want to be co-operative here by (a) not blocking, and (b)
     // getting our required work out of the way quickly so that we can return control flow to the JavaFX event loop for
     // handling user interaction with the GUI and rendering. We have three jobs: (1) keep audio flowing if sound is on,
@@ -555,9 +574,14 @@ public class VideoPlayerModel {
     }
 
     private void processFrame(Frame frame, InfoFrame info) throws Exception {
-        for (FrameProcessor processor : frameProcessors) {
-            processor.process(frame, info);
-        }
+    	 if (effectNs == null) {
+             effectNs = new long[frameProcessors.size()];
+         }
+         for (int i = 0; i < frameProcessors.size(); i++) {
+             long start = System.nanoTime();
+             frameProcessors.get(i).process(frame, info);
+             effectNs[i] += System.nanoTime() - start;
+         }
     }
 
     private void initialiseFrameProcessors(InfoVideo videoInfo) throws Exception {

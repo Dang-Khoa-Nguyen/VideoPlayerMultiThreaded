@@ -13,7 +13,7 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>comp3011</groupId>
-  <artifactId>VideoPlayerSingleThread</artifactId>
+  <artifactId>VideoPlayerMultiThread</artifactId>
   <version>0.1</version>
 
   <properties>
