@@ -42,9 +42,11 @@ public class VideoPlayerApp extends Application {
     @Override
     public void start(Stage stage) {
         this.stage = stage;
-
+        
+        // App just passes the effects on, the app doesn't need to know which frame processor exist
         controller = new VideoPlayerController(
                 commandLineController.isAudioRequested(),
+                commandLineController.getFrameProcessors(),
                 this::setVideoSize);
 
         Scene scene = new Scene(controller.getView().getRoot());

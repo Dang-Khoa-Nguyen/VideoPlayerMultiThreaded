@@ -12,7 +12,6 @@ package comp3011;
 
 import java.io.File;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Queue;
 import java.util.function.BiConsumer;
@@ -91,6 +90,7 @@ public class VideoPlayerModel {
 
     public VideoPlayerModel(
             boolean audioEnabled,
+            List<FrameProcessor> frameProcessors,
             BiConsumer<Integer, Integer> videoSizeChangedHandler,
             Consumer<Image> frameReadyHandler,
             Consumer<String> statusChangedHandler,
@@ -102,7 +102,9 @@ public class VideoPlayerModel {
         this.statusChangedHandler = statusChangedHandler;
         this.playbackStateChangedHandler = playbackStateChangedHandler;
         this.audioOutputStateChangedHandler = audioOutputStateChangedHandler;
-        this.frameProcessors = new ArrayList<>();
+        
+        // A read-only copy, so the effect order chosen on the command line can't change during playback.
+        this.frameProcessors = List.copyOf(frameProcessors);
 //        frameProcessors.add(new FrameBleeder());
 //        frameProcessors.add(new FrameScratcher());
 //        frameProcessors.add(new FrameDuster());
