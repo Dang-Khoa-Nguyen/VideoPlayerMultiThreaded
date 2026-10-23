@@ -9,13 +9,10 @@
  * Copyright 2026 Simon Ratcliffe
  */
 package comp3011;
- 
+
 import java.io.File;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Queue;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.function.BiConsumer;
@@ -49,9 +46,12 @@ public class VideoPlayerModel {
     // Timing lines are off unless run with -Dplayer.debug=true. Printing from the UI thread can block it
     // if whoever reads our output is slow, and a blocked UI thread shows up as dropped frames.
     private static final boolean DEBUG_TIMING = Boolean.getBoolean("player.debug");
- 
+    
     private final List<FrameProcessor> frameProcessors;
-    // The decoder thread adds audio and the UI thread drains it, so it must be thread-safe.
+    
+    // The decoder thread adds audio to this queue, and the UI thread removes it when it is due to be played,
+    // so the queue is used by two threads and must be thread-safe. ConcurrentLinkedQueue is thread-safe,
+    // keeps first-in-first-out order, and uses no locks, so the UI thread never has to wait for the decoder.
     private final Queue<PendingAudio> pendingAudio = new ConcurrentLinkedQueue<>();
     private final BiConsumer<Integer, Integer> videoSizeChangedHandler;
     private final Consumer<Image> frameReadyHandler;
@@ -59,8 +59,14 @@ public class VideoPlayerModel {
     private final BiConsumer<Boolean, Boolean> playbackStateChangedHandler;
     private final Consumer<Boolean> audioOutputStateChangedHandler;
  
-    // JavaFX calls handle() on every heartbeat, on the UI thread. It only plays audio and shows
-    // frames, so it never blocks.
+    // This is the critical wiring that allows the framework (JavaFX) to call
+    // into our model logic every time it goes around its event loop. Every GUI
+    // system has an event loop so that button clicks, key presses and window
+    // resizes can be responded to. Most offer ways of running additional logic
+    // in either idle time (when there are no pending UI events to process) or
+    // on a regular heart beat, such as with this JavaFX AnimationTimer. Here
+    // we just create a little anonymous local subclass and override the handle
+    // method to call the method we want run every heart beat
     private final AnimationTimer playbackTimer = new AnimationTimer() {
         @Override
         public void handle(long now) {
@@ -69,17 +75,36 @@ public class VideoPlayerModel {
     };
  
     private File videoFile; // Path to the media that comes from the command line
-    private FFmpegFrameGrabber grabber; // 3rd party decoder. Not thread-safe: only the decoder thread uses it while running.
-    private JavaFXFrameConverter converter; // Frame to JavaFX Image. Only the pipeline's convert stage uses it while running.
-    private volatile AudioPlayer audioPlayer; // volatile: the decoder thread checks it; null while audio is off
-    private long playRequestedNs; // for the startup timing line
-    private boolean startupReported; // the startup line is printed once per start, not after every seek
-    private FramePipeline pipeline; // effects and conversion, one thread each. Created per playback.
+    private FFmpegFrameGrabber grabber; // This is the 3rd party video media decoder. It deals in JavaCV Frame objects.
+    private JavaFXFrameConverter converter; // Takes Frame objects to JavaFX Image objects, which can be put on screen.
+    
+    // The UI thread opens and closes the audio player, and the decoder thread reads it to see
+    // whether audio is available. It is volatile so the decoder always sees the latest value.
+    // Without volatile, the decoder could keep seeing an old value, which is either null or a
+    // player that has already been closed. It is null while audio is off.
+    private volatile AudioPlayer audioPlayer;
+    
+    // Set when playback is requested, and used to print how long the first frame took to appear.
+    private long playRequestedNs; 
+    
+    // The startup time is printed once per start, not again after every seek.
+    private boolean startupReported;
+    
+    // Runs the effects and the conversion, one thread each. A new pipeline is created for each playback.
+    private FramePipeline pipeline; 
     private Thread decoderThread;
-    private FrameJob nextFrame; // UI thread only: the image taken from the pipeline, waiting for its due time
+    
+    // This is for UI thread only. The next finished frame taken from the pipeline, held here until its
+    // due time. It is null when no frame is waiting.
+    private FrameJob nextFrame; 
     private boolean playbackOpen; // True when playback is happening.
     private boolean pauseRequested;
-    private volatile boolean audioOutputEnabled; // volatile: the decoder thread reads it while the UI thread sets it
+    
+    // The UI thread turns sound on and off, and the decoder thread reads this flag to decide
+    // whether to decode audio. It is volatile so the decoder always sees the latest value after user click the sound button.
+    // Without volatile, the decoder could keep seeing the old value, so it might keep queuing
+    // audio after sound was turned off, or never start after it was turned on.
+    private volatile boolean audioOutputEnabled;
     private boolean audioAvailable;
     private boolean frameProcessorsInitialised;
     private long currentTimestampUs;
@@ -108,7 +133,8 @@ public class VideoPlayerModel {
         this.statusChangedHandler = statusChangedHandler;
         this.playbackStateChangedHandler = playbackStateChangedHandler;
         this.audioOutputStateChangedHandler = audioOutputStateChangedHandler;
-        // Copy so the caller cannot change the list while the decoder thread is using it.
+        // Copy the list so the caller cannot change it while the decoder and effect threads are using it.
+        // List.copyOf also makes the copy read-only, so no effect can be added or removed during playback 
         this.frameProcessors = List.copyOf(frameProcessors);
     }
  
@@ -158,11 +184,16 @@ public class VideoPlayerModel {
  
     public void toggleAudioOutput() {
         audioOutputEnabled = !audioOutputEnabled;
+        
+        // Open the audio line only if sound is on, the video is playing, the file has audio,
+        // and the line has not been opened yet, which means that audioPlayer is still null.
         if (audioOutputEnabled && playbackOpen && audioAvailable && audioPlayer == null) {
             try {
                 openAudioPlayer();
             } catch (Exception e) {
                 e.printStackTrace();
+                // If the sound line cannot be opened, for example because there is no audio device,
+                // turn sound off and keep playing the video without it.
                 audioOutputEnabled = false;
             }
         }
@@ -240,8 +271,7 @@ public class VideoPlayerModel {
             pipeline = new FramePipeline(
                     frameProcessors,
                     converter::convert,
-                    this::reportPipelineError,
-                    FramePipeline.defaultMaxEffectStages());
+                    this::reportPipelineError);
             resetPlaybackClock(currentTimestampUs);
             playbackOpen = true;
             playbackTimer.start();
@@ -284,11 +314,17 @@ public class VideoPlayerModel {
             grabber.setTimestamp(startTimestampUs);
         }
     }
- 
+    
+    
+    // Opens the audio line. This is called only when sound is on, because opening and warming up
+    // make the sound line is slow, and doing it every time made startup slower for users who never use sound.
     private void openAudioPlayer() throws Exception {
         AudioPlayer player = new AudioPlayer();
         player.open(grabber.getSampleRate(), grabber.getAudioChannels());
-        audioPlayer = player; // published only once it is open, so the decoder never sees a half-open line
+        
+        // The player is stored in the shared field only after it is fully open, so the decoder
+        // thread can never see a half-open audio line.
+        audioPlayer = player; 
     }
  
     private void resetPlaybackClock(long logicalTimestampUs) {
@@ -358,18 +394,21 @@ public class VideoPlayerModel {
                 }
             }
         } catch (InterruptedException e) {
-            // Asked to stop by a seek, stop or close. Nothing to clean up.
+            // Asked to stop by a seek, stop or close quietly. The frame being handed over was already freed above.
         } catch (Exception e) {
             reportError(e, () -> decoderThread == self);
         }
     }
  
     // Called from a pipeline thread when an effect or the conversion fails.
+    // The error only matters while a video is still open.
     private void reportPipelineError(Exception e) {
         reportError(e, () -> playbackOpen);
     }
  
-    // Only the UI thread may change the UI. The check drops errors from threads that were already stopped.
+    // Shows an error to the user. It can be called from any thread, but only the UI thread may
+    // change the window, so the work is passed to it with runLater. By the time it runs, the
+    // thread that failed may already have been stopped, for example, by a seek.
     private void reportError(Exception e, java.util.function.BooleanSupplier stillCurrent) {
         Platform.runLater(() -> {
             if (stillCurrent.getAsBoolean()) {
@@ -378,7 +417,8 @@ public class VideoPlayerModel {
         });
     }
  
-    // Decoder thread only. Returns null at the end of the video or when asked to stop.
+    // Runs on the decoder thread only, and reads from the file until it finds a video frame and returns.
+    // Then, it ready for the pipeline. Returns null when the video has ended or we were asked to stop.
     private FrameJob readNextVideoFrame() throws Exception {
         while (!Thread.currentThread().isInterrupted()) {
             Frame frame = grabFrame();
@@ -387,17 +427,22 @@ public class VideoPlayerModel {
             }
  
             long timestampUs = grabber.getTimestamp();
+            
+            // Sound is queued here, and the UI thread plays it when its time comes.
             if (audioAvailable && frame.samples != null) {
                 queueAudio(timestampUs, frame);
             }
- 
+            
+            // If this frame only had sound and no picture, so go back and read the next one.
             if (frame.image == null) {
                 continue;
             }
  
             if (!frameProcessorsInitialised) {
-                // Done here, before the first frame is handed over. The queue hand-off then makes the
-                // initialised effects visible to the effect threads.
+            	// The effects need to know the video size and format, and we only learn that from
+                // the first picture. So they are set up here, before the first frame goes into the
+                // pipeline. Putting that frame into the queue then makes the set-up visible to the
+                // effect threads.
                 initialiseFrameProcessors(new InfoVideo(
                         mediaName(videoFile),
                         totalVideoFrames,
@@ -420,8 +465,9 @@ public class VideoPlayerModel {
         return null;
     }
  
-    // Runs on the UI thread every heartbeat. It never decodes: it plays audio, takes the next
-    // frame from the queue and shows it when it is due.
+    // It run on the UI thread many times a second and never decodes and never waits. 
+    // It plays any audio that is due, takes the next finished frame if there is one, and shows it when its
+    // time has come.
     private void pumpPlayback(long now) {
         if (!playbackOpen) {
             return;
@@ -467,23 +513,31 @@ public class VideoPlayerModel {
             displayNextFrame(now, targetTimeNs);
         }
     }
- 
+    
+    // Shows the frame that is due and empties the slot so the next frame can be taken.
     private void displayNextFrame(long now, long targetTimeNs) {
         FrameJob frame = nextFrame;
         nextFrame = null;
+        
+        // The position shown to the user is where playback started or was seeked to, plus how far
+        // this frame is past the first frame shown. Math.max(0, ...) stops a negative value if a
+        // frame's timestamp is earlier than the first one.
         currentTimestampUs = logicalPlaybackBaseUs + Math.max(0, frame.info().timestampUs() - firstTimestampUs);
         relativeSeekBaseUs = NO_SEEK_REQUEST;
  
         // Once per second: how late the frame was shown, and how many frames are waiting.
         if (DEBUG_TIMING && intFrameRate > 0 && frame.info().frameNumber() % intFrameRate == 0) {
-            System.out.printf("Frame shown %dus after due, queue depth %d%n",
-                    (now - targetTimeNs) / 1_000L,
-                    pipeline.output().size());
+            long lateUs = (now - targetTimeNs) / 1_000L;
+            System.out.printf("Frame headroom %5dus out of %dus spare, queue depth %d%n",
+                    videoFrameDurationUs - lateUs,        
+                    videoFrameDurationUs,                 
+                    pipeline.output().size());           
         }
  
         notifyFrameReady(frame.image());
     }
  
+    
     // Decoder thread only.
     private void queueAudio(long timestampUs, Frame frame) {
         if (!audioOutputEnabled || audioPlayer == null) {
@@ -659,379 +713,5 @@ public class VideoPlayerModel {
         audioOutputStateChangedHandler.accept(audioOutputEnabled);
     }
  
-    // The decoder thread creates these and the UI thread consumes them. Only the UI thread
-    // calls advance(), so offset needs no synchronisation.
-    private static class PendingAudio {
-        private final long timestampUs;
-        private final byte[] samples;
-        private int offset;
- 
-        PendingAudio(long timestampUs, byte[] samples) {
-            this.timestampUs = timestampUs;
-            this.samples = samples;
-        }
- 
-        long timestampUs() {
-            return timestampUs;
-        }
- 
-        byte[] samples() {
-            return samples;
-        }
- 
-        int offset() {
-            return offset;
-        }
- 
-        int remaining() {
-            return samples.length - offset;
-        }
- 
-        void advance(int byteCount) {
-            offset += byteCount;
-        }
- 
-        boolean finished() {
-            return offset >= samples.length;
-        }
-    }
- 
-    // ------------------------------------------------------------------------------------------
-    // The frame pipeline. It lives in this file so the whole playback design can be read in one place.
-    // The nested classes are package-private (not private) only so the tests can reach them.
-    // ------------------------------------------------------------------------------------------
- 
-    /**
-     * One frame on its way through the pipeline.
-     *
-     * Before the convert stage it holds a decoded frame (and no image). The convert stage replaces
-     * it with a job that holds the finished image (and no frame). Exactly one thread owns a job at
-     * any moment: it is handed from stage to stage through a queue, which is what makes it safe to
-     * change the pixels without locks.
-     */
-    record FrameJob(Frame frame, InfoFrame info, Image image) {
- 
-        /** Sent after the last frame so every stage knows the video has ended. */
-        static final FrameJob END = new FrameJob(null, null, null);
- 
-        /** Frees the native memory of the decoded frame. Safe on a job with no frame. */
-        void close() {
-            if (frame != null) {
-                frame.close();
-            }
-        }
-    }
- 
-    /**
-     * One stage of the pipeline: a thread that takes a job from its input queue, does one piece of
-     * work on it, and puts the result on its output queue.
-     *
-     * Why one thread per stage: an effect keeps scratch buffers that change while it runs, so it
-     * must never process two frames at once. Its own thread guarantees that without locks, while
-     * different frames can still be in different effects at the same time.
-     */
-    static final class PipelineStage {
- 
-        /** The work of a stage. An effect returns the same job; the convert stage returns a new one. */
-        @FunctionalInterface
-        interface Work {
-            FrameJob apply(FrameJob job) throws Exception;
-        }
- 
-        private final String name;
-        private final BlockingQueue<FrameJob> input;
-        private final BlockingQueue<FrameJob> output;
-        private final Work work;
-        private final Consumer<Exception> errorHandler;
-        private Thread thread;
- 
-        PipelineStage(
-                String name,
-                BlockingQueue<FrameJob> input,
-                BlockingQueue<FrameJob> output,
-                Work work,
-                Consumer<Exception> errorHandler) {
-            this.name = name;
-            this.input = input;
-            this.output = output;
-            this.work = work;
-            this.errorHandler = errorHandler;
-        }
- 
-        /** Starts a new thread. A stopped stage can be started again (used after a seek). */
-        void start() {
-            thread = new Thread(this::run, name);
-            thread.setDaemon(true);
-            thread.start();
-        }
- 
-        /** Asks the thread to stop. It does not wait: call awaitStop() afterwards. */
-        void interrupt() {
-            if (thread != null) {
-                thread.interrupt();
-            }
-        }
- 
-        /** Waits until the thread has really finished, so nothing is still using the effect. */
-        void awaitStop() {
-            if (thread == null) {
-                return;
-            }
-            try {
-                thread.join();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            thread = null;
-        }
- 
-        private void run() {
-            // The job this thread currently owns. If we are stopped while holding one, we must free it
-            // ourselves, because no other stage knows about it.
-            FrameJob held = null;
-            try {
-                while (!Thread.currentThread().isInterrupted()) {
-                    FrameJob job = input.take(); // waits while there is nothing to do
-                    held = job;
- 
-                    if (job == FrameJob.END) {
-                        output.put(job); // pass the end marker on, then this stage is finished
-                        held = null;
-                        return;
-                    }
- 
-                    FrameJob result = work.apply(job);
-                    if (result != job) {
-                        job.close(); // the work made a new job, so the old frame is no longer needed
-                    }
-                    held = result;
- 
-                    output.put(result); // waits while the next stage is full (back-pressure)
-                    held = null;
-                }
-            } catch (InterruptedException e) {
-                // Asked to stop by a seek, stop or close. Nothing to report.
-            } catch (Exception e) {
-                errorHandler.accept(e);
-            } finally {
-                if (held != null) {
-                    held.close();
-                }
-            }
-        }
-    }
- 
-    /**
-     * Runs every effect, then the conversion to a JavaFX image, each on its own thread.
-     *
-     *   input -q-> [effect 1] -q-> [effect 2] -q-> ... -q-> [convert] -q-> output
-     *
-     * Speed is set by the slowest single stage, not by the sum of all of them, so adding an effect
-     * does not slow playback unless that stage alone is slower than one video frame.
-     *
-     * By default each effect runs on its own thread, so each effect instance is used by exactly one
-     * thread and needs no locks. The effects can optionally be grouped into fewer stages (see
-     * groupEffects), but on TITAN grouping into cores-2 stages dropped frames at 40 effects, so it
-     * is off by default. The order of the effects never changes.
-     *
-     * Why queues: a frame has exactly one owner at a time and the queue hands it over, so the pixels
-     * need no locks. Every queue is bounded, so a fast stage waits for a slow one (back-pressure) and
-     * memory cannot grow without limit. Frames stay in order because every queue is first-in
-     * first-out and every stage is a single thread.
-     */
-    static final class FramePipeline {
- 
-        // Between stages one slot is enough, because each stage also holds one frame while it works.
-        // A decoded frame is several MB, so a small number here keeps total memory down.
-        private static final int STAGE_QUEUE_CAPACITY = 1;
-        // The last queue feeds the display. It is larger so a slow frame does not show as a stutter.
-        private static final int OUTPUT_QUEUE_CAPACITY = 6;
- 
-        // Rough cost of each effect on one HD frame, in microseconds, measured on a development
-        // machine. Only the relative sizes matter: they decide how effects are grouped into stages.
-        private static final Map<String, Integer> EFFECT_COST_US = Map.ofEntries(
-                Map.entry("FrameNumberer", 25),
-                Map.entry("FrameScratcher", 30),
-                Map.entry("FrameFlickerer", 1200),
-                Map.entry("FrameBlackAndWhiter", 4100),
-                Map.entry("FrameYellower", 1850),
-                Map.entry("FrameVignetter", 6200),
-                Map.entry("FrameDuster", 60),
-                Map.entry("FrameJitterer", 200),
-                Map.entry("FrameMottler", 5600),
-                Map.entry("FrameBleeder", 8300),
-                Map.entry("FramePepperer", 470));
-        private static final int UNKNOWN_EFFECT_COST_US = 1_000;
- 
-        /** Turns a processed frame into an image. An interface so tests can supply a fake without JavaFX. */
-        @FunctionalInterface
-        interface Converter {
-            Image convert(Frame frame) throws Exception;
-        }
- 
-        private final List<PipelineStage> stages = new ArrayList<>();
-        private final List<BlockingQueue<FrameJob>> queues = new ArrayList<>();
-        private final BlockingQueue<FrameJob> input;
-        private final BlockingQueue<FrameJob> output;
- 
-        /**
-         * @param processors   the effects in the order they must be applied. Each instance must appear
-         *                     only once, because one instance is owned by one thread (the one running its group).
-         * @param converter    turns a processed frame into an image. Only the convert stage uses it.
-         * @param errorHandler called, from a pipeline thread, if a stage fails
-         * @param maxEffectStages the most threads the effects may be spread over
-         */
-        FramePipeline(
-                List<FrameProcessor> processors,
-                Converter converter,
-                Consumer<Exception> errorHandler,
-                int maxEffectStages) {
-            input = newQueue(STAGE_QUEUE_CAPACITY);
-            BlockingQueue<FrameJob> previous = input;
- 
-            for (List<FrameProcessor> group : groupEffects(processors, maxEffectStages)) {
-                BlockingQueue<FrameJob> next = newQueue(STAGE_QUEUE_CAPACITY);
-                stages.add(new PipelineStage(
-                        stageName(group),
-                        previous,
-                        next,
-                        job -> {
-                            for (FrameProcessor processor : group) { // in the order they were requested
-                                processor.process(job.frame(), job.info()); // changes the pixels in place
-                            }
-                            return job;
-                        },
-                        errorHandler));
-                previous = next;
-            }
- 
-            // Convert is its own stage so the cost of building the image is not added to the last effect.
-            output = newQueue(OUTPUT_QUEUE_CAPACITY);
-            stages.add(new PipelineStage(
-                    "convert",
-                    previous,
-                    output,
-                    job -> new FrameJob(null, job.info(), converter.convert(job.frame())),
-                    errorHandler));
-        }
- 
-        // By default every effect gets its own thread. On TITAN this scored better than grouping effects
-        // into cores-2 stages: with 40 effects the grouped version dropped frames, because one thread
-        // per effect lets the operating system balance the unequal effects across all cores.
-        // Override with -Dplayer.maxEffectStages=N to try grouping.
-        static int defaultMaxEffectStages() {
-            return Integer.getInteger("player.maxEffectStages", Integer.MAX_VALUE);
-        }
- 
-        /**
-         * Splits the effects, keeping their order, into at most maxGroups groups so that the most
-         * expensive group is as cheap as possible. That group sets the speed of the whole pipeline.
-         * It finds the smallest cost limit that fits in maxGroups groups, then packs to that limit.
-         */
-        static List<List<FrameProcessor>> groupEffects(List<FrameProcessor> processors, int maxGroups) {
-            if (maxGroups >= processors.size()) {
-                List<List<FrameProcessor>> single = new ArrayList<>();
-                for (FrameProcessor processor : processors) {
-                    single.add(List.of(processor)); // no limit reached: one thread per effect
-                }
-                return single;
-            }
-            long largest = 0;
-            long total = 0;
-            for (FrameProcessor processor : processors) {
-                largest = Math.max(largest, costOf(processor));
-                total += costOf(processor);
-            }
- 
-            long low = largest;
-            long high = total;
-            while (low < high) {
-                long limit = (low + high) / 2;
-                if (pack(processors, limit).size() <= maxGroups) {
-                    high = limit;
-                } else {
-                    low = limit + 1;
-                }
-            }
-            return pack(processors, low);
-        }
- 
-        // Fills each group in order until the next effect would push it over the limit.
-        private static List<List<FrameProcessor>> pack(List<FrameProcessor> processors, long limit) {
-            List<List<FrameProcessor>> groups = new ArrayList<>();
-            List<FrameProcessor> current = new ArrayList<>();
-            long currentCost = 0;
-            for (FrameProcessor processor : processors) {
-                long cost = costOf(processor);
-                if (!current.isEmpty() && currentCost + cost > limit) {
-                    groups.add(current);
-                    current = new ArrayList<>();
-                    currentCost = 0;
-                }
-                current.add(processor);
-                currentCost += cost;
-            }
-            if (!current.isEmpty()) {
-                groups.add(current);
-            }
-            return groups;
-        }
- 
-        static long costOf(FrameProcessor processor) {
-            return EFFECT_COST_US.getOrDefault(processor.getClass().getSimpleName(), UNKNOWN_EFFECT_COST_US);
-        }
- 
-        private static String stageName(List<FrameProcessor> group) {
-            StringBuilder name = new StringBuilder();
-            for (FrameProcessor processor : group) {
-                name.append(name.length() == 0 ? "" : "+").append(processor.getClass().getSimpleName());
-            }
-            return name.toString();
-        }
- 
-        /** The producer side. Put copied frames here, then FrameJob.END. */
-        BlockingQueue<FrameJob> input() {
-            return input;
-        }
- 
-        /** The consumer side. Takes finished images, in order. */
-        BlockingQueue<FrameJob> output() {
-            return output;
-        }
- 
-        void start() {
-            for (PipelineStage stage : stages) {
-                stage.start();
-            }
-        }
- 
-        /**
-         * Stops every stage and throws away any frames still in the queues. Call it only after the
-         * producer has stopped, or new frames could arrive while it clears. When it returns no
-         * pipeline thread is running, so the effects and the converter are safe to touch from the
-         * calling thread. The pipeline can be started again.
-         */
-        void stop() {
-            // Ask all stages to stop first, then wait for all of them: faster than one by one.
-            for (PipelineStage stage : stages) {
-                stage.interrupt();
-            }
-            for (PipelineStage stage : stages) {
-                stage.awaitStop();
-            }
-            for (BlockingQueue<FrameJob> queue : queues) {
-                FrameJob job;
-                while ((job = queue.poll()) != null) {
-                    job.close(); // free the native memory of frames that were never shown
-                }
-            }
-        }
- 
-        private BlockingQueue<FrameJob> newQueue(int capacity) {
-            BlockingQueue<FrameJob> queue = new ArrayBlockingQueue<>(capacity);
-            queues.add(queue);
-            return queue;
-        }
-    }
 }
  	 
