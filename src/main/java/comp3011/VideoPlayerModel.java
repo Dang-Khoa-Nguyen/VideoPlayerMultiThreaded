@@ -28,13 +28,25 @@ import javafx.application.Platform;
 import javafx.scene.image.Image;
 
 /**
- * The model part of the video player model-view-controller architecture.
+ * The model part of the video player model-view-controller architecture. This is an update from single thread to multi-thread.
  *
  * <p>
- * Owns the FFmpeg decoder, playback clock, seeking logic, audio scheduling,
- * and frame processing - which it all manages through cooperative multi-tasking
- * on a single thread. It publishes decoded frames and playback state through
- * callbacks supplied by its owning {@link VideoPlayerController}, keeping it
+ * Owns the FFmpeg decoder, the playback clock, seeking, pause and audio scheduling,
+ * and starts the frame pipeline. The work is split across threads:
+ * </p>
+ * <ul>
+ *   <li>one decoder thread reads frames and audio from the video file;</li>
+ *   <li>one thread per effect (see {@link FramePipeline}) changes the pixels, and a
+ *       final thread converts each finished frame to a JavaFX image;</li>
+ *   <li>the JavaFX UI thread only takes finished images, shows them when they are due,
+ *       plays the audio and handles the window.</li>
+ * </ul>
+ *
+ * <p>
+ * A frame is owned by one thread at a time and is handed from stage to stage through
+ * a queue, so the pixels need no locks. The clock, the next frame and the pause state
+ * are only touched by the UI thread. It publishes decoded frames and playback state
+ * through callbacks supplied by its owning {@link VideoPlayerController}, keeping it
  * decoupled from the JavaFX view.
  * </p>
  */
