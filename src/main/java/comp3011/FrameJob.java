@@ -1,3 +1,10 @@
+/*
+ * Authors:
+ *   1. Dang Khoa Nguyen - a3141297
+ *
+ * Added for COMP3011 Assignment 2: one frame on its way through the pipeline, and the END marker.
+ */
+
 package comp3011;
 
 import org.bytedeco.javacv.Frame;

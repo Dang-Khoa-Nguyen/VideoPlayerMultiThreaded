@@ -4,7 +4,7 @@
  * 
  * Authors:
  *   1. Simon Ratcliffe, in collaboration with GPT-5.6 Terra
- *   2. <student name and student number insert here upon modification>
+ *   2. Dang Khoa Nguyen - a3141297
  *
  * Copyright 2026 Simon Ratcliffe
  */

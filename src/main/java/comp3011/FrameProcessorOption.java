@@ -1,3 +1,10 @@
+/*
+ * Authors:
+ *   1. Dang Khoa Nguyen - a3141297
+ *
+ * Added for COMP3011 Assignment 2: the list of command line effects, used to parse flags and print help. 
+ */
+
 package comp3011;
 
 import java.util.function.Supplier;

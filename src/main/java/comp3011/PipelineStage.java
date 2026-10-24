@@ -1,3 +1,11 @@
+/*
+ * Authors:
+ *   1. Dang Khoa Nguyen - a3141297
+ *
+ * Added for COMP3011 Assignment 2: one thread of the pipeline: take a job, do one piece of work, hand it on.
+ */
+
+
 package comp3011;
 
 import java.util.concurrent.BlockingQueue;

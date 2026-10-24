@@ -328,8 +328,8 @@ public class VideoPlayerModel {
     }
     
     
-    // Opens the audio line. This is called only when sound is on, because opening and warming up
-    // make the sound line is slow, and doing it every time made startup slower for users who never use sound.
+    // Opens the audio line. Opening and warming it up is slow (about a second), so this is called only
+    // when sound is on. Doing it every time made startup slower for users who never use sound.
     private void openAudioPlayer() throws Exception {
         AudioPlayer player = new AudioPlayer();
         player.open(grabber.getSampleRate(), grabber.getAudioChannels());
@@ -429,8 +429,9 @@ public class VideoPlayerModel {
         });
     }
  
-    // Runs on the decoder thread only, and reads from the file until it finds a video frame and returns.
-    // Then, it ready for the pipeline. Returns null when the video has ended or we were asked to stop.
+    // Decoder thread only. Reads from the file until it finds a picture, then returns it as a job ready for the
+    // pipeline. Sound found on the way is queued for the UI thread. Returns null when the video has ended or
+    // when the thread was asked to stop.
     private FrameJob readNextVideoFrame() throws Exception {
         while (!Thread.currentThread().isInterrupted()) {
             Frame frame = grabFrame();

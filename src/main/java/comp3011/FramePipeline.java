@@ -1,3 +1,10 @@
+/*
+ * Authors:
+ *   1. Dang Khoa Nguyen - a3141297
+ *
+ * Added for COMP3011 Assignment 2: the chain of effect threads and queues that replaces single-threaded frame processing.
+ */
+
 package comp3011;
 
 import java.util.ArrayList;
