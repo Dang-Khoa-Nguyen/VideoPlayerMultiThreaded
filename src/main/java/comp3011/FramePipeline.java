@@ -22,7 +22,7 @@ import javafx.scene.image.Image;
  * Runs every effect, then the conversion to a JavaFX image, each on its own thread.
  *
  *   input --> [effect 1] --> [effect 2] --> ... --> [convert] --> output
- *	- Each arrow is a queue. Frames move from left to right, one thread per box.
+ *   - Each arrow is a queue, and each box is one thread.
  *   
  *<p>
  * Speed is set by the slowest single stage, not by the sum of all of them, so adding an effect
@@ -46,7 +46,7 @@ import javafx.scene.image.Image;
  *</p>
  *
  *<p>
- * The pipeline also uses queues so that the pixels need no locks.
+ * The pipeline also uses queues.
  * Frames move between threads through queues. A frame has exactly one owner at a time and the queue
  * hands it over, so the pixels need no locks. Every queue is bounded, so a fast stage waits for a
  * slow one (back-pressure) and memory cannot grow without limit. Frames stay in order because every
