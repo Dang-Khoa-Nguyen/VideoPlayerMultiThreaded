@@ -26,11 +26,11 @@ All commands run from the folder that contains `pom.xml`.
 | `mvn verify` | Runs the unit tests **and** the load test |
 
 In Eclipse, use *Run As > Maven build* with the same goals. Put the arguments in the `javafx.args` parameter, and add a
-`player.debug` parameter with the value `true` if you want the timing lines, like in the example below.
+`player.debug` parameter with the value `true` if you want the timing lines, and then you are going to get the debug output like below.
 
 ![debug_time](assets/debug_time.png)
 
-==> More explaination how to read this in [Performance](#6-performance)
+To read this output, see [Performance](#6-performance).
 
 ### Choosing effects (Part 1)
 
@@ -98,11 +98,11 @@ display), which holds up to 6.
 | Thread | Count | Job |
 |---|---|---|
 | Decoder | 1 | Reads frames, queues audio, copies each frame, feeds the first queue |
-| Effect threads | One per effect (G = number of effects) | Each runs its one effect on every frame, in order |
+| Effect threads | One per effect | Each runs its one effect on every frame, in order |
 | Convert | 1 | Builds the JavaFX image |
 | UI (JavaFX) | 1, not ours | Takes finished images, shows them when due, plays audio, handles the window |
 
-The effect threads run a little below normal priority, and at most (cores − 1) of them work at the same moment, so one
+The effect threads run a little below normal priority, and at most of them work at the same moment, so one
 core always stays free for the UI thread and everything else. `-Dplayer.maxConcurrentEffects=N` changes that limit for experiments.
 
 ### Why it is faster
@@ -121,7 +121,7 @@ finished frame comes out: once the line is full, one frame comes out every step 
 |---|---|
 | **One owner at a time.** A frame is held by one thread and handed over through a queue. | The pixels need no locks. A queue hand-off is the only synchronisation. |
 | **One thread per effect instance.** | Jitterer, Mottler and Bleeder keep scratch buffers that change while they run. Two frames in the same instance at once would corrupt each other. |
-| **Bounded queues** (1 between stages, 6 before the display). | A fast stage waits for a slow one (back-pressure), so memory cannot grow without limit.An HD image is about 8 MB, so each extra slot costs about 8 MB. Six slots hold about a quarter of a second at 24 fps, which is enough to hide one slow frame from the display. A larger queue would not raise the average speed, because the slowest effect sets that, so I kept it small. The size is one constant, `OUTPUT_QUEUE_CAPACITY` in `FramePipeline`. |
+| **Bounded queues** (1 between stages, 6 before the display). | A fast stage waits for a slow one (back-pressure), so memory cannot grow without limit. An HD image is about 8 MB, so each extra slot costs about 8 MB. Six slots hold about a quarter of a second at 24 fps, which is enough to hide one slow frame from the display. A larger queue would not raise the average speed, because the slowest effect sets that, so I kept it small. The size is one constant, `OUTPUT_QUEUE_CAPACITY` in `FramePipeline`. |
 | **Frames are copied** (`Frame.clone()`) when they enter the pipeline. | The grabber reuses one `Frame` and overwrites it on the next grab. The copy gives each frame one owner. It is freed after conversion. |
 | **Effects keep their order.** | Effects do not commute (black-and-white then yellow is not yellow then black-and-white), and the output must match the reference. |
 | **Effect threads run below normal priority, and at most (cores − 1) effects work at once.** | With 40 effects there are far more busy threads than cores. On TITAN the top rung used 7. 7 of 8 cores and a screenshot of the window sometimes timed out. Keeping one core free for the UI thread and the tools around it makes that less likely, and it costs about one core of speed. |
@@ -200,8 +200,7 @@ The line `First frame shown N ms after playback was requested` reports startup t
 
 ### Results
 
-TITAN relative to the supplied single-threaded reference player (100% is the same as the reference). This is the best
-completed run, made before the core limit was added:
+TITAN relative to the supplied single-threaded reference player (100% is the same as the reference). This is the best completed run, with performance 377%, startup 133% and use of cores 743.6%.
 
 ![performance](assets/performance.png)
 
@@ -210,9 +209,9 @@ completed run, made before the core limit was added:
 - Turning sound on for the first time opens the audio line, which takes about a second and briefly freezes the window.
   Starting with `-a` delays the start by the same time. I accepted this because opening it for every user slowed startup for
   people who never use sound. A background thread could open it without the freeze.
-- Each frame is copied once on entry (about 1 to 2 ms) and costs several MB while in flight.
+- Each frame is copied once on entry and costs several MB while in flight.
 - On machines with hyper-threading, extra threads give less than a full core each, so the speed-up is less than the core count.
-- Seek and stop wait (on the UI thread) for the decoder and every effect to finish the frame they are on, so a seek can
+- Seek and stop wait on the UI thread for the decoder and every effect to finish the frame they are on, so a seek can
   pause the window for a few milliseconds.
 - Opening the video file still happens on the UI thread, so it is the largest remaining startup cost.
 
@@ -232,6 +231,10 @@ completed run, made before the core limit was added:
 | `PendingAudio` | A piece of sound waiting to be played |
 | `FrameProcessor` and the 11 effect classes | The effects. Unchanged, so their output is identical to the original. |
 | `AudioPlayer`, `InfoVideo`, `InfoFrame` | Sound output and small data records |
+| `FramePipelineTest` | Unit tests for the pipeline (order, one owner per effect, bounded queues, stop and restart, errors, the limit on working effects) |
+| `CommandLineControllerTest` | Unit tests for the command line (order typed, repeats, short and long names, bad input, help text) |
+| `PipelineLoadIT` | Load test that compares the single threaded way with the pipeline on 22 real effects, runs under `mvn verify` |
+| `PipelineDemo` | Not a test. A small program that prints when each frame finishes, for the old way and the new way, to show why the pipeline is faster |
 
 ---
 
