@@ -7,7 +7,6 @@
 package comp3011;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -27,8 +26,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import comp3011.VideoPlayerModel.FrameJob;
-import comp3011.VideoPlayerModel.FramePipeline;
 
 /**
  * Each test names one promise the design makes: frames stay in order, effects run in the requested
@@ -36,7 +33,9 @@ import comp3011.VideoPlayerModel.FramePipeline;
  * and errors are reported. They use small synthetic frames and no JavaFX, so they run anywhere.
  */
 class FramePipelineTest {
-    private static final Duration LIMIT = Duration.ofSeconds(30); // a hang must fail the test, not freeze the build
+	
+	// a hang must fail the test after 30 seconds, not freeze the build
+    private static final Duration LIMIT = Duration.ofSeconds(30); 
 
     private final List<FramePipeline> started = new ArrayList<>();
 
@@ -47,7 +46,7 @@ class FramePipelineTest {
         }
     }
 
-    // ---- helpers ----
+    // ===== helpers =====
 
     /** A tiny frame whose first byte holds {@code number}. */
     private static FrameJob job(int number) {
@@ -56,7 +55,7 @@ class FramePipelineTest {
         return new FrameJob(frame, new InfoFrame(number, number * 41_667L), null);
     }
 
-    private FramePipeline start(List<FrameProcessor> effects, int maxStages, List<Exception> errors,
+    private FramePipeline start(List<FrameProcessor> effects, List<Exception> errors,
             ConcurrentLinkedQueue<Integer> converted) {
         FramePipeline pipeline = new FramePipeline(
                 effects,
@@ -65,8 +64,7 @@ class FramePipelineTest {
                     converted.add(((ByteBuffer) frame.image[0]).get(0) & 0xff);
                     return null;
                 },
-                errors::add,
-                maxStages);
+                errors::add);
         started.add(pipeline);
         pipeline.start();
         return pipeline;
@@ -150,14 +148,14 @@ class FramePipelineTest {
                 .count();
     }
 
-    // ---- tests ----
+    // ==== tests ====
 
     @Test
     @DisplayName("Frames come out in the order they went in")
     void framesStayInOrder() {
         assertTimeoutPreemptively(LIMIT, () -> {
             List<FrameProcessor> effects = List.of(new ProbeEffect(), new ProbeEffect(), new ProbeEffect());
-            FramePipeline pipeline = start(effects, 3, new ArrayList<>(), new ConcurrentLinkedQueue<>());
+            FramePipeline pipeline = start(effects, new ArrayList<>(), new ConcurrentLinkedQueue<>());
 
             List<Integer> numbers = runFrames(pipeline, 100);
 
@@ -169,29 +167,68 @@ class FramePipelineTest {
     }
 
     @Test
-    @DisplayName("Effects are applied in the requested order, however many threads they are spread over")
+    @DisplayName("Effects are applied in the requested order, however many effects there are")
     void effectsRunInRequestedOrder() {
         assertTimeoutPreemptively(LIMIT, () -> {
-            for (int maxStages : new int[] { 1, 3, 100 }) {
+            for (int effectCount : new int[] { 1, 3, 8 }) {
                 List<FrameProcessor> effects = new ArrayList<>();
-                for (int k = 1; k <= 8; k++) {
+                for (int k = 1; k <= effectCount; k++) {
                     effects.add(new OrderSensitiveEffect(k));
                 }
                 ConcurrentLinkedQueue<Integer> converted = new ConcurrentLinkedQueue<>();
-                FramePipeline pipeline = start(effects, maxStages, new ArrayList<>(), converted);
+                FramePipeline pipeline = start(effects, new ArrayList<>(), converted);
 
                 runFrames(pipeline, 50);
 
                 List<Integer> actual = new ArrayList<>(converted);
                 assertEquals(50, actual.size());
                 for (int frame = 0; frame < 50; frame++) {
-                    int expected = frame; // what running the 8 effects one after another gives
-                    for (int k = 1; k <= 8; k++) {
+                    int expected = frame; // what running the effects one after another gives
+                    for (int k = 1; k <= effectCount; k++) {
                         expected = ((byte) (expected * 3 + k)) & 0xff;
                     }
-                    assertEquals(expected, actual.get(frame), "frame " + frame + " with " + maxStages + " stage(s)");
+                    assertEquals(expected, actual.get(frame), "frame " + frame + " with " + effectCount + " effect(s)");
                 }
             }
+        });
+    }
+
+    @Test
+    @DisplayName("No more effects work at the same time than the limit allows, and the frames still come out in order")
+    void effectsRespectTheConcurrencyLimit() {
+        assertTimeoutPreemptively(LIMIT, () -> {
+            AtomicInteger working = new AtomicInteger();
+            AtomicInteger mostAtOnce = new AtomicInteger();
+            List<FrameProcessor> effects = new ArrayList<>();
+            for (int k = 0; k < 8; k++) {
+                effects.add(new FrameProcessor() {
+                    @Override
+                    public void process(Frame frame, InfoFrame info) throws Exception {
+                        int now = working.incrementAndGet();
+                        mostAtOnce.accumulateAndGet(now, Math::max);
+                        Thread.sleep(2); // long enough that other effects would overlap if they were allowed to
+                        working.decrementAndGet();
+                    }
+                });
+            }
+            ConcurrentLinkedQueue<Integer> converted = new ConcurrentLinkedQueue<>();
+            FramePipeline pipeline = new FramePipeline(effects, frame -> {
+                converted.add(((ByteBuffer) frame.image[0]).get(0) & 0xff);
+                return null;
+            }, e -> {
+                throw new RuntimeException(e);
+            }, 2);
+            started.add(pipeline);
+            pipeline.start();
+
+            List<Integer> numbers = runFrames(pipeline, 40);
+
+            assertTrue(mostAtOnce.get() <= 2, "more than 2 effects worked at once: " + mostAtOnce.get());
+            assertTrue(mostAtOnce.get() >= 1, "no effect ever ran");
+            for (int i = 0; i < numbers.size(); i++) {
+                assertEquals(i, numbers.get(i), "frame " + i + " came out in the wrong place");
+            }
+            assertEquals(40, numbers.size());
         });
     }
 
@@ -202,7 +239,7 @@ class FramePipelineTest {
             ExclusiveUseEffect first = new ExclusiveUseEffect();
             ExclusiveUseEffect second = new ExclusiveUseEffect();
             ExclusiveUseEffect third = new ExclusiveUseEffect();
-            FramePipeline pipeline = start(List.of(first, second, third), 3, new ArrayList<>(),
+            FramePipeline pipeline = start(List.of(first, second, third), new ArrayList<>(),
                     new ConcurrentLinkedQueue<>());
 
             runFrames(pipeline, 60);
@@ -215,43 +252,10 @@ class FramePipelineTest {
     }
 
     @Test
-    @DisplayName("Effects are grouped without losing, repeating or reordering any of them")
-    void groupingKeepsEveryEffectInOrder() {
-        List<FrameProcessor> effects = new ArrayList<>();
-        for (FrameProcessorOption option : FrameProcessorOption.values()) {
-            effects.add(option.create());
-        }
-        List<FrameProcessor> all = new ArrayList<>(effects);
-        for (FrameProcessorOption option : FrameProcessorOption.values()) {
-            all.add(option.create()); // the same list requested twice: 22 effects
-        }
-
-        for (int maxStages : new int[] { 1, 4, 6, 100 }) {
-            List<List<FrameProcessor>> groups = FramePipeline.groupEffects(all, maxStages);
-
-            assertTrue(groups.size() <= maxStages, "too many stages for a limit of " + maxStages);
-            List<FrameProcessor> flattened = new ArrayList<>();
-            long bottleneck = 0;
-            for (List<FrameProcessor> group : groups) {
-                assertFalse(group.isEmpty(), "an empty stage");
-                flattened.addAll(group);
-                bottleneck = Math.max(bottleneck, group.stream().mapToLong(FramePipeline::costOf).sum());
-            }
-            assertEquals(all, flattened, "effects were lost, repeated or reordered");
-
-            // The slowest stage sets the speed, so it should not be much above an even share of the work.
-            long total = all.stream().mapToLong(FramePipeline::costOf).sum();
-            long largest = all.stream().mapToLong(FramePipeline::costOf).max().orElse(0);
-            assertTrue(bottleneck <= total / Math.min(maxStages, all.size()) + largest,
-                    "stages are badly balanced: slowest " + bottleneck + "us of " + total + "us in total");
-        }
-    }
-
-    @Test
     @DisplayName("Memory is bounded: a stalled display holds the pipeline back instead of letting frames pile up")
     void queuesAreBounded() {
         assertTimeoutPreemptively(LIMIT, () -> {
-            FramePipeline pipeline = start(List.of(new ProbeEffect(), new ProbeEffect()), 2, new ArrayList<>(),
+            FramePipeline pipeline = start(List.of(new ProbeEffect(), new ProbeEffect()), new ArrayList<>(),
                     new ConcurrentLinkedQueue<>());
 
             // Nobody reads the output, like a display that has stopped. Count what the pipeline will take.
@@ -277,7 +281,7 @@ class FramePipelineTest {
     @DisplayName("Stop ends every thread and empties every queue, and the pipeline can then be started again")
     void stopLeavesNothingRunningAndRestartWorks() {
         assertTimeoutPreemptively(LIMIT, () -> {
-            FramePipeline pipeline = start(List.of(new ProbeEffect(), new ProbeEffect()), 2, new ArrayList<>(),
+            FramePipeline pipeline = start(List.of(new ProbeEffect(), new ProbeEffect()), new ArrayList<>(),
                     new ConcurrentLinkedQueue<>());
 
             for (int i = 0; i < 6; i++) {
@@ -303,7 +307,7 @@ class FramePipelineTest {
     void failureIsReported() {
         assertTimeoutPreemptively(LIMIT, () -> {
             List<Exception> errors = Collections.synchronizedList(new ArrayList<>());
-            FramePipeline pipeline = start(List.of(new FailingEffect()), 1, errors, new ConcurrentLinkedQueue<>());
+            FramePipeline pipeline = start(List.of(new FailingEffect()), errors, new ConcurrentLinkedQueue<>());
 
             for (int i = 0; i < 5; i++) {
                 pipeline.input().offer(job(i), 300, TimeUnit.MILLISECONDS);
@@ -321,7 +325,7 @@ class FramePipelineTest {
     @DisplayName("With no effects the frames still get through")
     void worksWithNoEffects() {
         assertTimeoutPreemptively(LIMIT, () -> {
-            FramePipeline pipeline = start(List.of(), 4, new ArrayList<>(), new ConcurrentLinkedQueue<>());
+            FramePipeline pipeline = start(List.of(), new ArrayList<>(), new ConcurrentLinkedQueue<>());
 
             assertEquals(List.of(0, 1, 2, 3, 4), runFrames(pipeline, 5));
         });
