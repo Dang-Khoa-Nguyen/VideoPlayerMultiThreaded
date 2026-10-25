@@ -551,13 +551,16 @@ public class VideoPlayerModel {
     }
  
     
-    // Decoder thread only.
+    // Decoder thread only. The decoder turns the sound of this frame into bytes and queues it, and the UI thread
+    // plays it when it is due. The field is copied into a local variable so it cannot change between the null
+    // check and the use. It is only set to null after the decoder has been stopped, so this is for clarity.
     private void queueAudio(long timestampUs, Frame frame) {
-        if (!audioOutputEnabled || audioPlayer == null) {
+    	AudioPlayer player = audioPlayer;
+        if (!audioOutputEnabled || player == null) {
             return;
         }
- 
-        byte[] samples = audioPlayer.copySamples(frame);
+
+        byte[] samples = player.copySamples(frame);
         if (samples.length > 0) {
             pendingAudio.add(new PendingAudio(timestampUs, samples));
         }
