@@ -30,6 +30,8 @@ In Eclipse, use *Run As > Maven build* with the same goals. Put the arguments in
 
 ![debug_time](assets/debug_time.png)
 
+==> More explaination how to read this in [Performance](#6-performance)
+
 ### Choosing effects (Part 1)
 
 Effects are chosen on the command line and applied **in the order typed**. They can be repeated and stacked.
@@ -51,6 +53,17 @@ Effects are chosen on the command line and applied **in the order typed**. They 
 `-nssn` means number, scratch, scratch, number. `--help` lists everything. Adding an effect needs one new line in
 `FrameProcessorOption`.
 
+### What changed for Part 1
+
+| File | What changed |
+|---|---|
+| `FrameProcessorOption` (new) | An enum with one line per effect, holding its short flag, long name, help text and constructor. Parsing and `--help` both read it, so adding an effect is one new line. |
+| `CommandLineController` | New `parseLongOption()` and `parseShortFlags()` replace the old if/else chain, so stacked flags (`-jfddn`), long names and repeated effects work. Every effect is created in the order typed and kept in a list, which `getFrameProcessors()` returns. `--help` alone is allowed, and `--help` with anything else is an error. `--help` now prints one line per effect from `FrameProcessorOption`. |
+| `VideoPlayerApp` | Passes `getFrameProcessors()` to the controller. |
+| `VideoPlayerController` | Has a new `frameProcessors` constructor parameter, which it passes on to the model. |
+| `FrameProcessor` | The Javadoc now says that a new effect is added by adding a constant to `FrameProcessorOption`. The code is unchanged. |
+| `VideoPlayerModel` | The list of effects written directly in the code is gone. It now receives the list built from the command line. |
+
 ---
 
 ## 2. The problem with the original design
@@ -61,17 +74,10 @@ One thread did everything: decode, every effect in turn, convert, drawing, audio
 UI thread:  [decode][effect 1][effect 2] ... [effect N][convert][show]   one frame at a time
 ```
 
-At 24 fps each frame has **41,667 µs**. Timings on a development machine (HD frame, 11 effects):
-
-| Step | Time |
-|---|---|
-| Decode | about 0.9 ms |
-| Effects, all 11 in turn | about 28 ms (Bleeder 8.3, Vignetter 6.2, Mottler 5.5, Black-and-white 4.1) |
-| Convert to an image | about 2.5 ms |
-| **Total** | **about 31 ms, so nearly the whole budget** |
+At 24 fps each frame has **41,667 µs** (1,000,000 µs divided by 24). Decoding and converting a frame take a small part of that, and the effects take the rest. Every effect added makes the effects part longer, so playback fell behind real time after only a few effects.
 
 Three problems followed:
-- The speed limit was the **sum** of all effects.
+- The speed limit was the **sum** of all the effects.
 - Only one core did the work.
 - There was a single frame slot with no buffer, so one slow frame was a visible stutter, and the window froze while a frame was made.
 
@@ -102,8 +108,7 @@ core always stays free for the UI thread and everything else. `-Dplayer.maxConcu
 ### Why it is faster
 
 Different frames are in different stages at the same time, so the speed limit becomes the **slowest stage**, not the
-sum of all of them. With the 11 effects the slowest stage is Bleeder at about 8 ms, against 31 ms in series. The UI thread
-only shows frames, so the window stays responsive.
+sum of all of them. With the 11 effects, the slowest single effect takes far less time than all of them together, and that is the new speed limit.
 
 A frame still goes through every effect in order, so the first frame is not faster. What improves is how often a
 finished frame comes out: once the line is full, one frame comes out every step of the slowest stage.
@@ -116,11 +121,11 @@ finished frame comes out: once the line is full, one frame comes out every step 
 |---|---|
 | **One owner at a time.** A frame is held by one thread and handed over through a queue. | The pixels need no locks. A queue hand-off is the only synchronisation. |
 | **One thread per effect instance.** | Jitterer, Mottler and Bleeder keep scratch buffers that change while they run. Two frames in the same instance at once would corrupt each other. |
-| **Bounded queues** (1 between stages, 6 before the display). | A fast stage waits for a slow one (back-pressure), so memory cannot grow without limit. An HD frame is several MB. The 6 slots also hide one slow frame from the display. |
+| **Bounded queues** (1 between stages, 6 before the display). | A fast stage waits for a slow one (back-pressure), so memory cannot grow without limit.An HD image is about 8 MB, so each extra slot costs about 8 MB. Six slots hold about a quarter of a second at 24 fps, which is enough to hide one slow frame from the display. A larger queue would not raise the average speed, because the slowest effect sets that, so I kept it small. The size is one constant, `OUTPUT_QUEUE_CAPACITY` in `FramePipeline`. |
 | **Frames are copied** (`Frame.clone()`) when they enter the pipeline. | The grabber reuses one `Frame` and overwrites it on the next grab. The copy gives each frame one owner. It is freed after conversion. |
 | **Effects keep their order.** | Effects do not commute (black-and-white then yellow is not yellow then black-and-white), and the output must match the reference. |
-| **Effect threads run below normal priority, and at most (cores − 1) effects work at once.** | With 40 effects there are far more busy threads than cores. On TITAN the top rung used 7.7 of 8 cores and a screenshot of the window sometimes timed out. Keeping one core free for the UI thread and the tools around it makes that less likely, and it costs about one core of speed. |
-| **Convert is its own stage.** | Its cost (about 2.5 ms) is not added to the last effect. |
+| **Effect threads run below normal priority, and at most (cores − 1) effects work at once.** | With 40 effects there are far more busy threads than cores. On TITAN the top rung used 7. 7 of 8 cores and a screenshot of the window sometimes timed out. Keeping one core free for the UI thread and the tools around it makes that less likely, and it costs about one core of speed. |
+| **Convert is its own stage.** | Its cost is not added to the last effect. |
 | **The clock starts when the first frame is shown**, not when it was decoded. | A frame can wait in a queue. That waiting must not make it look late. |
 | **The UI thread uses `poll()`, never `take()`.** | The UI can never wait on a queue and freeze. |
 | **The audio line opens only when sound is on.** Audio is only decoded while sound is on. | Opening and warming up the sound line is slow and was done even without `-a`. This gave a faster start. |
@@ -136,6 +141,7 @@ finished frame comes out: once the line is full, one frame comes out every step 
 | Effects hard-coded in the model | An effect list built from the command line (`FrameProcessorOption`) | This is what Part 1 needs: effects chosen in the order typed, and repeatable. |
 | The audio line opened every time | The audio line opened only when sound is on (`openAudioPlayer()`) | Opening it is slow, so it delayed startup for users who never turned sound on. |
 | The UI thread doing the frame work | The UI thread only shows frames that are due, using `poll()` | The window can no longer freeze waiting for a frame. |
+
 
 ### Alternative I tried and why I did not keep them
 

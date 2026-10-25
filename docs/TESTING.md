@@ -23,15 +23,17 @@ The load test (`mvn verify`) compares both ways on your own machine. Result on 8
 
 ![load tests](/assets/load_tests.png)
 
-The test also checks that the pipeline gives exactly the same pixels, in the same order, as the single-threaded way. The speed-up depends on the machine and on how busy it is. On my machine it has ranged from about 3 to 6.5 times faster. On 4 or more cores the test requires the pipeline to be at least 1.2 times faster, not an exact number, so it does not fail by accident on a busy machine.  
+The test also checks that the pipeline gives exactly the same pixels, in the same order, as the single-threaded way. The speed-up depends on the machine and on how busy it is. On my machine it has ranged from about 2.7 to 6.1 times faster. On 4 or more cores the test requires the pipeline to be at least 1.2 times faster, not an exact number, so it does not fail by accident on a busy machine.  
 
 ## Frame-by-frame demo
 
-The load test shows the result. `PipelineDemo` shows the reason. It runs three fake effects that only wait (10 ms,
-20 ms and 10 ms, so one frame needs 40 ms to pass all of them) and prints when each frame finishes, first the original way
+The load test shows the result. `PipelineDemo` shows the reason. It runs three fake effects that only wait **10 ms**,
+**20 ms** and **10 ms**, so one frame needs **40 ms** to pass all of them. Then, it prints when each frame finishes, first the original way
 and then through the pipeline. Run it from Eclipse with Run As > Java Application.
 
 ![comparison-version](/assets/comparison_version.png)
+
+Both ways are run once without timing first, so that Java loading classes is not counted as frame time.
 
 The first frame is not faster, because it still has to pass every effect in order. While one
 frame is in the second effect, the next frame is already in the first, so a finished frame comes out every 20 ms instead of every 40 ms.
