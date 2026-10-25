@@ -4,6 +4,9 @@
 # Maven build output
 target/
 
+# No metadata
+.metadata/
+
 # Eclipse project metadata
 .classpath
 .project
