@@ -21,8 +21,6 @@ import org.bytedeco.javacv.Frame;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import comp3011.VideoPlayerModel.FrameJob;
-import comp3011.VideoPlayerModel.FramePipeline;
 
 /**
  * Runs all eleven real effects, twice over (22 effects), on synthetic frames. It does the same work
@@ -96,13 +94,12 @@ class PipelineLoadIT {
 
         // 2. The pipeline, using the same effect objects.
         ConcurrentLinkedQueue<Long> piped = new ConcurrentLinkedQueue<>();
-        int stages = FramePipeline.defaultMaxEffectStages();
         FramePipeline pipeline = new FramePipeline(effects, f -> {
             piped.add(checksum(f));
             return null;
         }, e -> {
             throw new RuntimeException(e);
-        }, stages);
+        });
         pipeline.start();
         try {
             startNs = System.nanoTime();
@@ -124,9 +121,9 @@ class PipelineLoadIT {
             producer.join();
 
             int cores = Runtime.getRuntime().availableProcessors();
-            System.out.printf("%nLoad test: %d effects, %d frames of %dx%d, %d cores, %d effect stage(s)%n"
+            System.out.printf("%nLoad test: %d effects, %d frames of %dx%d, %d cores, one thread per effect%n"
                     + "  single-threaded: %6.1f frames/s%n  pipeline:        %6.1f frames/s  (%.2fx)%n",
-                    effects.size(), FRAMES, WIDTH, HEIGHT, cores, stages, singleFps, pipelineFps,
+                    effects.size(), FRAMES, WIDTH, HEIGHT, cores, singleFps, pipelineFps,
                     pipelineFps / singleFps);
 
             // Correctness first: the same pixels, in the same order.
