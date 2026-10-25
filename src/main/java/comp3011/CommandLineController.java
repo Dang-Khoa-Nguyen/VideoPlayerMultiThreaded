@@ -33,7 +33,7 @@ public class CommandLineController {
     private File videoFile;
     private String errorMessage;
     private final List<FrameProcessor> frameProcessors = new ArrayList<>();
-    public List<FrameProcessor> getFrameProcessors() { return frameProcessors; }
+    public List<FrameProcessor> getFrameProcessors() { return List.copyOf(frameProcessors); }
 
     public CommandLineController(String[] args) {
         this.args = args.clone();
