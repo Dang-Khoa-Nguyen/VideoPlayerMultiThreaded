@@ -21,26 +21,37 @@ import javafx.scene.image.Image;
 /**
  * Runs every effect, then the conversion to a JavaFX image, each on its own thread.
  *
- *   input -q-> [effect 1] -q-> [effect 2] -q-> ... -q-> [convert] -q-> output
- *
+ *   input --> [effect 1] --> [effect 2] --> ... --> [convert] --> output
+ *	- Each arrow is a queue. Frames move from left to right, one thread per box.
+ *   
+ *<p>
  * Speed is set by the slowest single stage, not by the sum of all of them, so adding an effect
  * does not slow playback unless that stage alone is slower than one video frame.
+ *</p>
  *
+ *<p>
  * Each effect runs on its own thread, so each effect instance is used by exactly one thread and
- * needs no locks. Grouping several effects into fewer threads was tried and removed: on TITAN it
- * dropped frames at 40 effects. The order of the effects never changes.
+ * needs no locks. Giving every effect its own thread also lets the operating system spread the
+ * effects, which take different amounts of time, across all the cores. The order of the effects
+ * never changes.
+ *</p>
  *
- * Keeping the machine responsive: with many effects there are far more busy threads than cores.
- * Two things stop them from taking every core. The effect threads run a little below normal
- * priority, and at most (cores - 1) of them may be inside an effect at the same moment. That
- * leaves one core free for the UI thread, the decoder, the convert stage and anything else on
- * the machine (for example a tool that takes screenshots of the window), so the window keeps
- * being drawn on time even when every effect is busy.
+ *<p>
+ * The pipeline shares the CPU between its threads so that the window stays responsive.
+ * With many effects there are far more busy threads than cores, so two things stop them taking
+ * every core. The effect threads run a little below normal priority, and at most (cores - 1) of
+ * them may be inside an effect at the same moment. That leaves one core free for the UI thread,
+ * the decoder, the convert stage and anything else on the machine, for example a tool that takes
+ * screenshots of the window, so the window keeps being drawn on time even when every effect is busy.
+ *</p>
  *
- * Why queues: a frame has exactly one owner at a time and the queue hands it over, so the pixels
- * need no locks. Every queue is bounded, so a fast stage waits for a slow one (back-pressure) and
- * memory cannot grow without limit. Frames stay in order because every queue is first-in
- * first-out and every stage is a single thread.
+ *<p>
+ * The pipeline also uses queues so that the pixels need no locks.
+ * Frames move between threads through queues. A frame has exactly one owner at a time and the queue
+ * hands it over, so the pixels need no locks. Every queue is bounded, so a fast stage waits for a
+ * slow one (back-pressure) and memory cannot grow without limit. Frames stay in order because every
+ * queue is first-in first-out and every stage is a single thread.
+ * </p>
  */
 public class FramePipeline {
 

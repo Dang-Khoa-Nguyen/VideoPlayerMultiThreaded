@@ -18,8 +18,10 @@ import org.bytedeco.javacv.Frame;
  * Run it from Eclipse (Run As > Java Application) or with the pom's exec/test classpath. It uses fake
  * effects that only wait, so the numbers are easy to read: no real pixels, no JavaFX, no video.
  *
+ *<p>
  * Three effects take 10 ms, 20 ms and 10 ms. One frame needs 40 ms to pass all three.
  * It prints the moment each finished frame comes out, for both designs.
+ *</p>
  */
 public class PipelineDemo {
     private static final int FRAMES = 8;
@@ -63,9 +65,19 @@ public class PipelineDemo {
         System.out.printf("Effects take %s ms. One frame needs %d ms to pass all of them. The slowest effect is %d ms.%n%n",
                 java.util.Arrays.toString(EFFECT_MS), sum, slowest);
 
-        // ---- OLD: one thread, one frame goes through every effect, then the next frame starts ----
+        // ==== OLD: one thread, one frame goes through every effect, then the next frame starts ====
         System.out.println("OLD: one frame goes through all effects, then the next frame starts");
         List<FrameProcessor> oldEffects = effects();
+        
+        // Run the old way a few times without timing it to warm it up, so Java loading classes is not counted as frame time.
+        for (int n = 0; n < 3; n++) {
+            Frame warm = smallFrame();
+            for (FrameProcessor effect : oldEffects) {
+                effect.process(warm, new InfoFrame(n, 0));
+            }
+            warm.close();
+        }
+        
         long start = System.nanoTime();
         long previous = start;
         for (int n = 1; n <= FRAMES; n++) {
@@ -80,7 +92,7 @@ public class PipelineDemo {
             frame.close();
         }
 
-        // ---- NEW: one thread per effect, different frames are in different effects at the same time ----
+        // ===== NEW: one thread per effect, different frames are in different effects at the same time =====
         System.out.println();
         System.out.println("NEW: one thread per effect, several frames are being worked on at once");
         FramePipeline pipeline = new FramePipeline(effects(), f -> null, e -> e.printStackTrace(), EFFECT_MS.length);
@@ -96,7 +108,7 @@ public class PipelineDemo {
                 }
                 pipeline.input().put(FrameJob.END);
             } catch (InterruptedException e) {
-                // demo is ending
+                // The demo is ending
             }
         });
         start = System.nanoTime();
