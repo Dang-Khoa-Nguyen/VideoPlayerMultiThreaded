@@ -13,12 +13,19 @@ import java.util.function.Consumer;
 
 
 /**
- * One stage of the pipeline: a thread that takes a job from its input queue, does one piece of
+ * One stage of the pipeline. It is a thread that takes a job from its input queue, does one piece of
  * work on it, and puts the result on its output queue.
  *
- * Why one thread per stage: an effect keeps scratch buffers that change while it runs, so it
- * must never process two frames at once. Its own thread guarantees that without locks, while
- * different frames can still be in different effects at the same time.
+ * <p>
+ * {@link FramePipeline} creates one of these for every effect and one for the convert step, and joins
+ * them with bounded queues.
+ * </p>
+ *
+ * <p>
+ * Each stage has its own thread because an effect keeps scratch buffers that change while it runs, so it
+ * must never process two frames at once. Its own thread guarantees that without locks, while different
+ * frames can still be in different effects at the same time.
+ * </p>
  */
 public class PipelineStage {
 

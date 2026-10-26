@@ -22,7 +22,7 @@ import javafx.scene.image.Image;
  * Runs every effect, then the conversion to a JavaFX image, each on its own thread.
  *
  *   input --> [effect 1] --> [effect 2] --> ... --> [convert] --> output
- *   - Each arrow is a queue, and each box is one thread.
+ *   - Each arrow is a queue, and each box is one {@link PipelineStage}, which is one thread.
  *   
  *<p>
  * Speed is set by the slowest single stage, not by the sum of all of them, so adding an effect
@@ -49,7 +49,7 @@ import javafx.scene.image.Image;
  * The pipeline also uses queues.
  * Frames move between threads through queues. A frame has exactly one owner at a time and the queue
  * hands it over, so the pixels need no locks. Every queue is bounded, so a fast stage waits for a
- * slow one (back-pressure) and memory cannot grow without limit. Frames stay in order because every
+ * slow one and memory cannot grow without limit. Frames stay in order because every
  * queue is first-in first-out and every stage is a single thread.
  * </p>
  */
@@ -93,6 +93,12 @@ public class FramePipeline {
     }
 
     /**
+     * Builds the pipeline with an explicit limit on how many effects may work at the same moment.
+     *
+     * @param processors           the effects in the order they must be applied. Each instance must appear
+     *                             only once, because one instance is owned by exactly one thread.
+     * @param converter            turns a processed frame into an image. Only the convert stage uses it.
+     * @param errorHandler         called, from a pipeline thread, if a stage fails
      * @param maxConcurrentEffects the most effects that may be working at the same moment. Every effect
      *                             still has its own thread, but a thread must hold one of these permits
      *                             while it is inside its effect, so the rest wait without using a core.
@@ -102,12 +108,14 @@ public class FramePipeline {
             Converter converter,
             Consumer<Exception> errorHandler,
             int maxConcurrentEffects) {
-        // Fair, so the effect that has waited longest goes first and no frame is held up for ever.
+        // The effect that has waited longest goes first and no frame is held up for ever.
         Semaphore workPermits = new Semaphore(Math.max(1, maxConcurrentEffects), true);
 
         input = newQueue(STAGE_QUEUE_CAPACITY);
         BlockingQueue<FrameJob> previous = input;
-
+        
+        // One PipelineStage per effect. The stage does the waiting, the hand-over and the cleanup, and the
+        // lambda below is the only part that differs, so it holds the work of this one effect.
         for (FrameProcessor processor : processors) {
             BlockingQueue<FrameJob> next = newQueue(STAGE_QUEUE_CAPACITY);
             stages.add(new PipelineStage(
