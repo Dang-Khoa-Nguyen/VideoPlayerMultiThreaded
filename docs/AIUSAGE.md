@@ -13,6 +13,5 @@ Tool used: Claude Sonnet 5.5 (Anthropic), through Claude Code.
 - Explained hard definitions such as `volatile`, `ConcurrentLinkedQueue`, back-pressure and why effects need an owner thread.
 - Recommended me to add those classes (`FramePipeline`, `PipelineStage`, `FrameJob`), the unit tests and the load test. It also support on providing information where I should code, run, and change those classes and tests.
 - Helped improving code comments, the README and the testing notes.
-- Brainstormed approaches with me, including the assembly line, which I chose.
 - Reviewed my project against the marking rubric and pointed out mistakes.
 - Suggested commit messages.
